@@ -14,13 +14,14 @@ load("time.star", "time")
 # 511.org API endpoint
 PREDICTIONS_URL = "https://api.511.org/transit/StopMonitoring?api_key=%s&agency=SF&stopCode=%s&format=json"
 
-# Colors
-COLOR_DIRECTION = "#CCC"  # Light gray for IN/OUT
-COLOR_TIMES = "#D4A017"  # Muted gold for arrival times
-COLOR_ROUTE1_BG = "#008752"  # Green background for first route
-COLOR_ROUTE1_TEXT = "#FFF"  # White text on green
-COLOR_ROUTE2_BG = "#00539b"  # Blue background for second route
-COLOR_ROUTE2_TEXT = "#FFF"  # White text on blue
+# Row colors (background, text)
+ROW_COLORS = [
+    ("#008752", "#FFF"),  # Green
+    ("#00539b", "#FFF"),  # Blue
+    ("#8B008B", "#FFF"),  # Purple
+]
+COLOR_DIRECTION = "#AAA"
+COLOR_TIMES = "#D4A017"
 
 def main(config):
     api_key = config.get("api_key")
@@ -34,14 +35,19 @@ def main(config):
             ),
         )
 
-    # Get route and stop configuration
-    route1 = config.get("route1") or ""
-    stop1_in = config.get("stop1_in") or ""
-    stop1_out = config.get("stop1_out") or ""
-    route2 = config.get("route2") or ""
-    stop2_in = config.get("stop2_in") or ""
+    # Get configuration for each row
+    rows = []
+    for i in range(1, 4):
+        route = config.get("route%d" % i) or ""
+        stop = config.get("stop%d" % i) or ""
+        direction = config.get("dir%d" % i) or "IN"
 
-    if not route1 or not stop1_in:
+        if route and route != "none" and stop:
+            predictions = get_predictions(api_key, stop, route)
+            bg_color, text_color = ROW_COLORS[(i - 1) % len(ROW_COLORS)]
+            rows.append(render_row(route, direction, predictions, bg_color, text_color))
+
+    if not rows:
         return render.Root(
             child = render.Box(
                 render.WrappedText(
@@ -50,21 +56,6 @@ def main(config):
                 ),
             ),
         )
-
-    # Fetch predictions for each configured stop
-    rows = []
-
-    if route1 and stop1_in:
-        predictions = get_predictions(api_key, stop1_in, route1)
-        rows.append(render_row(route1, "IN", predictions, COLOR_ROUTE1_BG, COLOR_ROUTE1_TEXT))
-
-    if route1 and stop1_out:
-        predictions = get_predictions(api_key, stop1_out, route1)
-        rows.append(render_row(route1, "OUT", predictions, COLOR_ROUTE1_BG, COLOR_ROUTE1_TEXT))
-
-    if route2 and route2 != "none" and stop2_in:
-        predictions = get_predictions(api_key, stop2_in, route2)
-        rows.append(render_row(route2, "IN", predictions, COLOR_ROUTE2_BG, COLOR_ROUTE2_TEXT))
 
     return render.Root(
         child = render.Column(
@@ -88,7 +79,6 @@ def get_predictions(api_key, stop_id, route_filter):
         return []
 
     body = res.body().lstrip("\ufeff")
-
     data = json.decode(body)
 
     delivery = data.get("ServiceDelivery", {})
@@ -128,31 +118,33 @@ def render_row(route, direction, predictions, circle_color, text_color):
     """Render a single row: route, direction, and times."""
 
     if predictions:
-        times_str = ", ".join([str(m) for m in predictions])
+        times_str = ",".join([str(m) for m in predictions])
     else:
         times_str = "--"
 
-    return render.Padding(
-        pad = (2, 0, 0, 0),
-        child = render.Row(
-            expanded = True,
-            main_align = "start",
-            cross_align = "center",
-            children = [
-                render.Circle(
-                    diameter = 9,
-                    color = circle_color,
-                    child = render.Text(route, font = "tom-thumb", color = text_color),
-                ),
-                render.Box(width = 2, height = 1),
-                render.Box(
-                    width = 20,
-                    height = 8,
-                    child = render.Text(direction, color = COLOR_DIRECTION),
-                ),
-                render.Text(times_str, color = COLOR_TIMES),
-            ],
-        ),
+    # Use short direction labels
+    dir_label = "I" if direction == "IN" else "O"
+
+    return render.Row(
+        expanded = True,
+        main_align = "start",
+        cross_align = "center",
+        children = [
+            render.Box(width = 2, height = 1),
+            render.Circle(
+                diameter = 9,
+                color = circle_color,
+                child = render.Text(route, font = "tom-thumb", color = text_color),
+            ),
+            render.Box(width = 3, height = 1),
+            render.Box(
+                width = 6,
+                height = 8,
+                child = render.Text(dir_label, color = COLOR_DIRECTION),
+            ),
+            render.Box(width = 3, height = 1),
+            render.Text(times_str, color = COLOR_TIMES),
+        ],
     )
 
 def get_schema():
@@ -170,7 +162,14 @@ def get_schema():
         schema.Option(display = "22 Fillmore", value = "22"),
         schema.Option(display = "38 Geary", value = "38"),
         schema.Option(display = "38R Geary Rapid", value = "38R"),
+        schema.Option(display = "43 Masonic", value = "43"),
+        schema.Option(display = "48 Quintara/24th St", value = "48"),
         schema.Option(display = "49 Van Ness/Mission", value = "49"),
+    ]
+
+    direction_options = [
+        schema.Option(display = "IN", value = "IN"),
+        schema.Option(display = "OUT", value = "OUT"),
     ]
 
     return schema.Schema(
@@ -182,39 +181,74 @@ def get_schema():
                 desc = "Get free key at 511.org/open-data/token",
                 icon = "key",
             ),
+            # Row 1
             schema.Dropdown(
                 id = "route1",
-                name = "Primary Route",
-                desc = "Your main route",
+                name = "Row 1 Route",
+                desc = "First row route",
                 icon = "bus",
                 options = route_options,
                 default = "N",
             ),
             schema.Text(
-                id = "stop1_in",
-                name = "Inbound Stop Code",
+                id = "stop1",
+                name = "Row 1 Stop Code",
                 desc = "Find codes at 511.org/transit/agencies/stop-id",
-                icon = "arrowRight",
-            ),
-            schema.Text(
-                id = "stop1_out",
-                name = "Outbound Stop Code",
-                desc = "Find codes at 511.org/transit/agencies/stop-id",
-                icon = "arrowLeft",
+                icon = "mapPin",
             ),
             schema.Dropdown(
+                id = "dir1",
+                name = "Row 1 Direction",
+                desc = "Direction label",
+                icon = "arrowRight",
+                options = direction_options,
+                default = "IN",
+            ),
+            # Row 2
+            schema.Dropdown(
                 id = "route2",
-                name = "Secondary Route",
-                desc = "Optional second route",
+                name = "Row 2 Route",
+                desc = "Second row route",
                 icon = "bus",
                 options = [schema.Option(display = "None", value = "none")] + route_options,
                 default = "none",
             ),
             schema.Text(
-                id = "stop2_in",
-                name = "Secondary Stop Code",
-                desc = "Stop code for secondary route",
+                id = "stop2",
+                name = "Row 2 Stop Code",
+                desc = "Find codes at 511.org/transit/agencies/stop-id",
                 icon = "mapPin",
+            ),
+            schema.Dropdown(
+                id = "dir2",
+                name = "Row 2 Direction",
+                desc = "Direction label",
+                icon = "arrowRight",
+                options = direction_options,
+                default = "OUT",
+            ),
+            # Row 3
+            schema.Dropdown(
+                id = "route3",
+                name = "Row 3 Route",
+                desc = "Third row route",
+                icon = "bus",
+                options = [schema.Option(display = "None", value = "none")] + route_options,
+                default = "none",
+            ),
+            schema.Text(
+                id = "stop3",
+                name = "Row 3 Stop Code",
+                desc = "Find codes at 511.org/transit/agencies/stop-id",
+                icon = "mapPin",
+            ),
+            schema.Dropdown(
+                id = "dir3",
+                name = "Row 3 Direction",
+                desc = "Direction label",
+                icon = "arrowRight",
+                options = direction_options,
+                default = "IN",
             ),
         ],
     )
